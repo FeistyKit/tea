@@ -215,6 +215,23 @@ class Lexer:
             self.parse_identifier_or_keyword()
 
 
+class ExprType(IntEnum):
+    Binary = auto()
+    Grouping = auto()
+    Literal = auto()
+    Unary = auto()
+    Count = auto()
+
+
+@dataclass
+class Expr:
+    left: Optional[Expr]
+    operation: Optional[Token]
+    right: Optional[Expr]
+    literal: Union[None, int, str]
+    typ: ExprType
+
+
 def compile_tokens(source: list[Token]) -> list[TeaOp]:
     assert False, "Todo: Implement compile_tokens"
 
