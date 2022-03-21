@@ -43,13 +43,16 @@ class TokenType(IntEnum):
     Dash = auto()
     Plus = auto()
     Slash = auto()
+    Star = auto()
     Greater = auto()
     Less = auto()
     Number = auto()
+    String = auto()
     And = auto()
     Or = auto()
     Module = auto()
     Identifier = auto()
+    Bang = auto()
     Count = auto()
 
 
@@ -100,6 +103,9 @@ class Lexer:
             not self.finished()
         ), "Advance should not be called after parsing is finished!"
         ch = self.source[self.current]
+        if ch == "\n":
+            self.line += 1
+            self.col = 0
         self.current += 1
         return ch
 
@@ -129,11 +135,29 @@ class Lexer:
     def parse_number(self) -> None:
         while self.peek().isnumeric():
             self.advance()
+
+        # This is so the parsing of the number doesn't accidentally consume the next character.
+        # However, if there are no subsequent characters, then it can't consume anything and thus
+        # moving it back is incorrect
+        if not self.finished():
+            self.current -= 1
+        print("num =", self.source[self.start : self.current] + '"')
         num = int(self.source[self.start : self.current])
         self.add_tok(TokenType.Number, val=num)
 
     def parse_string(self) -> None:
-        assert False, "TODO: Parsing strings is not yet implemented!"
+        while self.peek() != '"' and not self.finished():
+            ch = self.advance()
+            s = ""
+            if ch == "\\":
+                if self.match("n"):
+                    s += "\n"
+                elif self.match("t"):
+                    s += "\t"
+                elif self.match("r"):
+                    s += "\r"
+                elif self.match('"'):
+                    s += '"'
 
     def skip_comment(self) -> None:
         assert False, "TODO: Parsing comments is not yet implemented!"
@@ -148,7 +172,6 @@ class Lexer:
             if ch == " " or ch == "\0":
                 break
             else:
-                print("ch =", ch)
                 self.advance()
 
         id: str = self.source[self.start : self.current]
@@ -156,8 +179,7 @@ class Lexer:
             id = id[:-1]
         if id[-1] == "/":
             id = id[:-1]
-        print("id =", id)
-        assert TokenType.Count == 20, "Updating parsing of tokens"  # type: ignore
+        assert TokenType.Count == 23, "Updating parsing of tokens"  # type: ignore
         if id == "printu":
             self.add_tok(TokenType.Printu)
         elif id == "==":
@@ -182,6 +204,8 @@ class Lexer:
             self.add_tok(TokenType.And)
         elif id == "or":
             self.add_tok(TokenType.Or)
+        elif id == "*":
+            self.add_tok(TokenType.Star)
         else:
             self.add_tok(TokenType.Identifier, val=id)
 
@@ -192,7 +216,7 @@ class Lexer:
     def next_tok(self) -> None:
         ch = self.advance()
         assert len(ch) == 1, "Lexer.advance() should return only a single character!"
-        assert TokenType.Count.value == 20, "Updating parsing of tokens"
+        assert TokenType.Count.value == 23, "Updating parsing of tokens"
         if ch == "{":
             self.add_tok(TokenType.OpenBracket)
         elif ch == "}":
@@ -204,6 +228,8 @@ class Lexer:
         elif ch.isspace() or self.current == 0:
             if self.match("-"):  # Support kebab-case naming style
                 self.add_tok(TokenType.Dash)
+            elif self.match("!"):
+                self.add_tok(TokenType.Bang)
         elif ch == "/":
             if self.match("/"):
                 self.skip_comment()
@@ -225,11 +251,112 @@ class ExprType(IntEnum):
 
 @dataclass
 class Expr:
-    left: Optional[Expr]
-    operation: Optional[Token]
-    right: Optional[Expr]
-    literal: Union[None, int, str]
     typ: ExprType
+    lhs: Optional["Expr"] = None
+    op: Optional[Token] = None
+    rhs: Optional["Expr"] = None
+    literal: Union[None, int, str] = None
+
+
+class Parser:
+    def __init__(self, toks: list[Token]) -> None:
+        self.current: int = 0
+        self.len: int = len(toks)
+        self.toks: list[Token] = toks
+
+    def peek(self) -> Token:
+        return self.toks[self.current]
+
+    def previous(self) -> Token:
+        return self.toks[self.current - 1]
+
+    def finished(self) -> bool:
+        return self.current >= self.len
+
+    def advance(self) -> Token:
+        if not self.finished():
+            self.current += 1
+        return self.previous()
+
+    def check(self, expected: TokenType) -> bool:
+        if self.finished():
+            return False
+        return self.peek().typ == expected
+
+    def match(self, *types: TokenType) -> bool:
+        for typ in types:
+            if self.check(typ):
+                self.advance()
+                return True
+        return False
+
+    def expression(self) -> Expr:
+        return self.equality()
+
+    def comparison(self) -> Expr:
+        expr: Expr = self.term()
+        while self.match(TokenType.Greater, TokenType.Less):
+            op: Token = self.previous()
+            rhs: Expr = self.term()
+            expr = Expr(typ=ExprType.Binary, op=op, rhs=rhs)
+        return expr
+
+    def equality(self) -> Expr:
+        expr: Expr = self.comparison()
+        while self.match(TokenType.BangEqual, TokenType.DoubleEq):
+            operator: Token = self.previous()
+            rhs: Expr = self.comparison()
+            expr = Expr(typ=ExprType.Binary, lhs=expr, op=operator, rhs=rhs)
+
+        return expr
+
+    def term(self) -> Expr:
+        expr: Expr = self.factor()
+        while self.match(TokenType.Dash, TokenType.Plus):
+            op: Token = self.previous()
+            right: Expr = self.factor()
+            expr = Expr(typ=ExprType.Binary, lhs=expr, op=op, rhs=right)
+        return expr
+
+    def factor(self) -> Expr:
+        expr: Expr = self.unary()
+        while self.match(TokenType.Slash, TokenType.Star):
+            op: Token = self.previous()
+            right: Expr = self.unary()
+            expr = Expr(typ=ExprType.Binary, lhs=expr, op=op, rhs=right)
+        return expr
+
+    def unary(self) -> Expr:
+        if self.match(TokenType.Bang, TokenType.Dash):
+            op: Token = self.previous()
+            right: Expr = self.unary()
+            return Expr(typ=ExprType.Unary, op=op, rhs=right)
+        return self.primary()
+
+    def primary(self) -> Expr:
+        # TODO: Do booleans in Parser.primary()
+        # https://craftinginterpreters.com/parsing-expressions.html
+
+        if self.match(TokenType.Number, TokenType.String):
+            prev_lit = self.previous().val
+            assert prev_lit is not None, "Literal type should not be None!"
+            return Expr(typ=ExprType.Literal, literal=prev_lit)
+        if self.match(TokenType.OpenParens):
+            expr: Expr = self.expression()
+            self.consume(TokenType.CloseParens, 'Expected "(" after expression.')
+            return Expr(typ=ExprType.Grouping, lhs=expr)
+
+        report_error(self.toks[self.current].loc, "Expected expression.")
+        sys.exit(1)
+
+    def consume(self, typ: TokenType, msg: str) -> Token:
+        if self.check(typ):
+            return self.advance()
+        report_error(self.peek().loc, msg)
+        sys.exit(1)
+
+    def parse(self) -> Expr:
+        return self.expression()
 
 
 def compile_tokens(source: list[Token]) -> list[TeaOp]:
@@ -312,9 +439,11 @@ def write_asm(out: io.TextIOWrapper, ops: list[TeaOp]) -> None:
 
 
 def main() -> None:
-    lexer = Lexer("a/b/c/dl/e", source_name="<provided>")
+    lexer = Lexer("1 + (2 * 3) - 4", source_name="<provided>")
     toks = lexer.all_tokens()
-    pprint.pprint(toks)
+    parser = Parser(toks)
+    tree = parser.parse()
+    pprint.pprint(tree)
 
 
 def main2() -> None:
